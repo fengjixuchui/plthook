@@ -382,6 +382,7 @@ static int get_memory_permission(void *address)
     FILE *fp;
     char buf[PATH_MAX];
     char perms[5];
+    int bol = 1;
 
     fp = fopen("/proc/self/maps", "r");
     if (fp == NULL) {
@@ -390,13 +391,27 @@ static int get_memory_permission(void *address)
     }
     while (fgets(buf, PATH_MAX, fp) != NULL) {
         unsigned long start, end;
+        int eol = (strchr(buf, '\n') != NULL);
+        if (bol) {
+            /* The fgets reads from the beginning of a line. */
+            if (!eol) {
+                /* The next fgets reads from the middle of the same line. */
+                bol = 0;
+            }
+        } else {
+            /* The fgets reads from the middle of a line. */
+            if (eol) {
+                /* The next fgets reads from the beginnig of a line. */
+                bol = 1;
+            }
+            continue;
+        }
 
         if (sscanf(buf, "%lx-%lx %4s", &start, &end, perms) != 3) {
             continue;
         }
         if (start <= addr && addr < end) {
             int prot = 0;
-            fclose(fp);
             if (perms[0] == 'r') {
                 prot |= PROT_READ;
             } else if (perms[0] != '-') {
@@ -419,6 +434,7 @@ static int get_memory_permission(void *address)
                 perms[4] = '\0';
                 goto unknown_perms;
             }
+            fclose(fp);
             return prot;
         }
     }
