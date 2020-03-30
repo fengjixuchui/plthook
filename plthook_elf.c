@@ -62,6 +62,10 @@
 #include <link.h>
 #include "plthook.h"
 
+#if defined __UCLIBC__ && !defined RTLD_NOLOAD
+#define RTLD_NOLOAD 0
+#endif
+
 #ifndef __GNUC__
 #define __attribute__(arg)
 #endif
@@ -200,7 +204,7 @@ static int check_elf_header(const Elf_Ehdr *ehdr);
 #endif
 static void set_errmsg(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
 
-#if defined __ANDROID__
+#if defined __ANDROID__ || defined __UCLIBC__
 struct dl_iterate_data {
     char* addr;
     struct link_map lmap;
@@ -245,18 +249,26 @@ int plthook_open(plthook_t **plthook_out, const char *filename)
 
 int plthook_open_by_handle(plthook_t **plthook_out, void *hndl)
 {
-#if defined __ANDROID__
-    char *addr;
+#if defined __ANDROID__ || defined __UCLIBC__
+    const static char *symbols[] = {
+        "__INIT_ARRAY__",
+        "_end",
+        "_start"
+    };
+    size_t i;
 
     if (hndl == NULL) {
         set_errmsg("NULL handle");
         return PLTHOOK_FILE_NOT_FOUND;
     }
-    addr = dlsym(hndl, "__INIT_ARRAY__");
-    if (addr == NULL) {
-        addr = dlsym(hndl, "_end");
+    for (i = 0; i < sizeof(symbols)/sizeof(symbols[0]); i++) {
+        char *addr = dlsym(hndl, symbols[i]);
+        if (addr != NULL) {
+            return plthook_open_by_address(plthook_out, addr - 1);
+        }
     }
-    return plthook_open_by_address(plthook_out, addr - 1);
+    set_errmsg("Could not find an address in the specified handle.");
+    return PLTHOOK_INTERNAL_ERROR;
 #else
     struct link_map *lmap = NULL;
 
@@ -276,7 +288,7 @@ int plthook_open_by_address(plthook_t **plthook_out, void *address)
 {
 #if defined __FreeBSD__
     return PLTHOOK_NOT_IMPLEMENTED;
-#elif defined __ANDROID__
+#elif defined __ANDROID__ || defined __UCLIBC__
     struct dl_iterate_data data = {0,};
     data.addr = address;
     dl_iterate_phdr(dl_iterate_cb, &data);
@@ -300,7 +312,7 @@ int plthook_open_by_address(plthook_t **plthook_out, void *address)
 
 static int plthook_open_executable(plthook_t **plthook_out)
 {
-#if defined __ANDROID__
+#if defined __ANDROID__ || defined __UCLIBC__
     return plthook_open_shared_library(plthook_out, NULL);
 #elif defined __linux__
     return plthook_open_real(plthook_out, _r_debug.r_map);
@@ -339,7 +351,7 @@ static int plthook_open_executable(plthook_t **plthook_out)
 static int plthook_open_shared_library(plthook_t **plthook_out, const char *filename)
 {
     void *hndl = dlopen(filename, RTLD_LAZY | RTLD_NOLOAD);
-#ifdef __ANDROID__
+#if defined __ANDROID__ || defined __UCLIBC__
     int rv;
 #else
     struct link_map *lmap = NULL;
@@ -349,7 +361,7 @@ static int plthook_open_shared_library(plthook_t **plthook_out, const char *file
         set_errmsg("dlopen error: %s", dlerror());
         return PLTHOOK_FILE_NOT_FOUND;
     }
-#ifdef __ANDROID__
+#if defined __ANDROID__ || defined __UCLIBC__
     rv = plthook_open_by_handle(plthook_out, hndl);
     dlclose(hndl);
     return rv;
@@ -541,7 +553,7 @@ static int plthook_open_real(plthook_t **plthook_out, struct link_map *lmap)
 
 #if defined __linux__
     plthook.plt_addr_base = (char*)lmap->l_addr;
-#if defined __ANDROID__
+#if defined __ANDROID__ || defined __UCLIBC__
     dyn_addr_base = (const char*)lmap->l_addr;
 #endif
 #elif defined __FreeBSD__ || defined __sun
